@@ -21,6 +21,28 @@ const ntoh = function(word) {
 };
 
 /**
+ * Copy exactly the bytes represented by an ArrayBufferView into a new,
+ * byte-aligned Uint8Array. Callers may pass a slice of a larger buffer and
+ * that slice may start at an address that is not aligned to four bytes.
+ *
+ * @param {ArrayBufferView} view the view to copy
+ * @return {Uint8Array} a tightly packed copy of the view
+ * @private
+ */
+const copyViewBytes = function(view) {
+  const source = new Uint8Array(
+    view.buffer,
+    view.byteOffset,
+    view.byteLength
+  );
+  const bytes = new Uint8Array(view.byteLength);
+
+  bytes.set(source);
+
+  return bytes;
+};
+
+/**
  * Decrypt bytes using AES-128 with CBC and PKCS#7 padding.
  *
  * @param {Uint8Array} encrypted the encrypted bytes
@@ -34,17 +56,21 @@ const ntoh = function(word) {
  * @see https://tools.ietf.org/html/rfc2315
  */
 const decrypt = function(encrypted, key, initVector) {
+  // Copy the visible slice so that byteOffset and alignment in the original
+  // buffer cannot cause out-of-bounds or unaligned word access.
+  const encryptedBytes = copyViewBytes(encrypted);
+
   // word-level access to the encrypted bytes
   const encrypted32 = new Int32Array(
-    encrypted.buffer,
-    encrypted.byteOffset,
-    encrypted.byteLength >> 2
+    encryptedBytes.buffer,
+    encryptedBytes.byteOffset,
+    encryptedBytes.byteLength >> 2
   );
 
   const decipher = new AES(Array.prototype.slice.call(key));
 
   // byte and word-level access for the decrypted output
-  const decrypted = new Uint8Array(encrypted.byteLength);
+  const decrypted = new Uint8Array(encryptedBytes.byteLength);
   const decrypted32 = new Int32Array(decrypted.buffer);
 
   // temporary variables for working with the IV, encrypted, and
@@ -119,11 +145,17 @@ const decrypt = function(encrypted, key, initVector) {
 class Decrypter {
   constructor(encrypted, key, initVector, done) {
     const step = Decrypter.STEP;
-    const encrypted32 = new Int32Array(encrypted.buffer);
-    const decrypted = new Uint8Array(encrypted.byteLength);
+    // Work from a tightly packed copy of the requested slice. Using
+    // encrypted.buffer directly would also process bytes before/after the
+    // slice and use the wrong output offsets.
+    const encryptedBytes = copyViewBytes(encrypted);
+    const encrypted32 = new Int32Array(encryptedBytes.buffer);
+    const decrypted = new Uint8Array(encryptedBytes.byteLength);
     let i = 0;
 
     this.asyncStream_ = new AsyncStream();
+    this.done_ = done;
+    this.settled_ = false;
 
     // split up the encryption job and do the individual chunks asynchronously
     this.asyncStream_.push(this.decryptChunk_(
@@ -145,9 +177,20 @@ class Decrypter {
       ));
     }
     // invoke the done() callback when everything is finished
-    this.asyncStream_.push(function() {
-      // remove pkcs#7 padding from the decrypted bytes
-      done(null, unpad(decrypted));
+    this.asyncStream_.push(() => {
+      if (this.settled_) {
+        return;
+      }
+
+      try {
+        // remove pkcs#7 padding from the decrypted bytes
+        const unpadded = unpad(decrypted);
+
+        this.settled_ = true;
+        this.done_(null, unpadded);
+      } catch (error) {
+        this.fail_(error);
+      }
     });
   }
 
@@ -162,13 +205,33 @@ class Decrypter {
   }
 
   /**
+   * Stop pending chunks and report an error through the completion callback.
+   *
+   * @param {Error} error the failure to report
+   * @private
+   */
+  fail_(error) {
+    if (this.settled_) {
+      return;
+    }
+
+    this.settled_ = true;
+    this.asyncStream_.jobs.length = 0;
+    this.done_(error);
+  }
+
+  /**
    * @private
    */
   decryptChunk_(encrypted, key, initVector, decrypted) {
-    return function() {
-      const bytes = decrypt(encrypted, key, initVector);
+    return () => {
+      try {
+        const bytes = decrypt(encrypted, key, initVector);
 
-      decrypted.set(bytes, encrypted.byteOffset);
+        decrypted.set(bytes, encrypted.byteOffset);
+      } catch (error) {
+        this.fail_(error);
+      }
     };
   }
 }

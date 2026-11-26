@@ -14,22 +14,70 @@ const stringFromBytes = function(bytes) {
   return result;
 };
 
+const sharedBufferSlice = function(bytes, totalLength, offset) {
+  const buffer = new Uint8Array(totalLength);
+
+  for (let i = 0; i < totalLength; i++) {
+    buffer[i] = (i * 37 + 11) & 0xff;
+  }
+  buffer.set(bytes, offset);
+
+  return new Uint8Array(buffer.buffer, offset, bytes.byteLength);
+};
+
+const howdyEncrypted = new Uint8Array([
+  0xce, 0x90, 0x97, 0xd0,
+  0x08, 0x46, 0x4d, 0x18,
+  0x4f, 0xae, 0x01, 0x1c,
+  0x82, 0xa8, 0xf0, 0x67
+]);
+
 QUnit.module('Decryption');
 QUnit.test('decrypts a single AES-128 with PKCS7 block', function(assert) {
   const key = new Uint32Array([0, 0, 0, 0]);
   const initVector = key;
-  // the string "howdy folks" encrypted
-  const encrypted = new Uint8Array([
-    0xce, 0x90, 0x97, 0xd0,
-    0x08, 0x46, 0x4d, 0x18,
-    0x4f, 0xae, 0x01, 0x1c,
-    0x82, 0xa8, 0xf0, 0x67
-  ]);
 
   assert.deepEqual(
     'howdy folks',
-    stringFromBytes(unpad(decrypt(encrypted, key, initVector))),
+    stringFromBytes(unpad(decrypt(howdyEncrypted, key, initVector))),
     'decrypted with a byte array key'
+  );
+});
+
+[
+  {totalLength: 48, offset: 16},
+  {totalLength: 80, offset: 0},
+  {totalLength: 56, offset: 7}
+].forEach(function(spec) {
+  QUnit.test(
+    'decrypts a shared-buffer slice at offset ' + spec.offset,
+    function(assert) {
+      const key = new Uint32Array([0, 0, 0, 0]);
+      const initVector = key;
+      const encrypted = sharedBufferSlice(
+        howdyEncrypted,
+        spec.totalLength,
+        spec.offset
+      );
+      const copied = encrypted.slice();
+      const result = decrypt(encrypted, key, initVector);
+
+      assert.strictEqual(
+        result.byteLength,
+        howdyEncrypted.byteLength,
+        'the padded result has only the slice length'
+      );
+      assert.deepEqual(
+        Array.from(result),
+        Array.from(decrypt(copied, key, initVector)),
+        'matches decrypting a tightly packed copy'
+      );
+      assert.strictEqual(
+        stringFromBytes(unpad(result)),
+        'howdy folks',
+        'unpads to the expected plaintext'
+      );
+    }
   );
 });
 
@@ -149,14 +197,9 @@ QUnit.module('Incremental Decryption', {
 QUnit.test('asynchronously decrypts a 4-word block', function(assert) {
   const key = new Uint32Array([0, 0, 0, 0]);
   const initVector = key;
-  // the string "howdy folks" encrypted
-  const encrypted = new Uint8Array([0xce, 0x90, 0x97, 0xd0,
-    0x08, 0x46, 0x4d, 0x18,
-    0x4f, 0xae, 0x01, 0x1c,
-    0x82, 0xa8, 0xf0, 0x67]);
   let decrypted;
   const decrypter = new Decrypter(
-    encrypted,
+    howdyEncrypted,
     key,
     initVector,
     function(error, result) {
@@ -175,6 +218,63 @@ QUnit.test('asynchronously decrypts a 4-word block', function(assert) {
     'howdy folks',
     stringFromBytes(decrypted),
     'decrypts and unpads the result'
+  );
+});
+
+[
+  {totalLength: 48, offset: 16},
+  {totalLength: 80, offset: 0},
+  {totalLength: 56, offset: 7}
+].forEach(function(spec) {
+  QUnit.test(
+    'asynchronously decrypts a shared slice at offset ' + spec.offset,
+    function(assert) {
+      const key = new Uint32Array([0, 0, 0, 0]);
+      const initVector = key;
+      const encrypted = sharedBufferSlice(
+        howdyEncrypted,
+        spec.totalLength,
+        spec.offset
+      );
+      const copied = encrypted.slice();
+      let sharedResult;
+      let copiedResult;
+      const sharedDecrypter = new Decrypter(
+        encrypted,
+        key,
+        initVector,
+        function(error, result) {
+          assert.notOk(error, 'shared slice does not fail');
+          sharedResult = result;
+        }
+      );
+
+      const copiedDecrypter = new Decrypter(
+        copied,
+        key,
+        initVector,
+        function(error, result) {
+          assert.notOk(error, 'copied slice does not fail');
+          copiedResult = result;
+        }
+      );
+
+      this.clock.tick(sharedDecrypter.asyncStream_.delay * 2);
+      assert.ok(copiedDecrypter, 'copied decrypter was created');
+
+      assert.ok(sharedResult, 'shared slice called back');
+      assert.ok(copiedResult, 'copied slice called back');
+      assert.deepEqual(
+        Array.from(sharedResult),
+        Array.from(copiedResult),
+        'shared and copied plaintext are byte-for-byte equal'
+      );
+      assert.strictEqual(
+        stringFromBytes(sharedResult),
+        'howdy folks',
+        'contains the expected text'
+      );
+    }
   );
 });
 

@@ -41,7 +41,8 @@
     "ignore": [
       "dist",
       "docs",
-      "test/dist"
+      "test/dist",
+      "vendor"
     ]
   },
   "files": [

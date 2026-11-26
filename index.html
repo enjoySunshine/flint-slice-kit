@@ -1,15 +1,1138 @@
 <!doctype html>
-<html>
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>aes-decrypter Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>aes-decrypter 缓冲区切片核对</title>
   <script src="dist/aes-decrypter.js"></script>
+  <script>
+    // The test build cleans dist/. Keep a local built fallback so index.html
+    // can still be opened directly after running the unit-test build.
+    if (!window.aesDecrypter) {
+      document.write('<script src="vendor/aes-decrypter.js"><\/script>');
+    }
+  </script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --border: rgba(128, 128, 128, 0.35);
+      --panel: rgba(255, 255, 255, 0.72);
+      --text: #1f2933;
+      --muted: #52606d;
+      --ok-bg: #e3fcef;
+      --ok-text: #006644;
+      --bad-bg: #ffebe6;
+      --bad-text: #bf2600;
+      --pending-bg: #deebff;
+      --pending-text: #0747a6;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --panel: rgba(30, 34, 42, 0.82);
+        --text: #f5f7fa;
+        --muted: #cbd2d9;
+        --ok-bg: #0d4f3c;
+        --ok-text: #baf3db;
+        --bad-bg: #5d1f15;
+        --bad-text: #ffbdad;
+        --pending-bg: #0c3a6e;
+        --pending-text: #b3d4ff;
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      line-height: 1.55;
+    }
+
+    header,
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    header {
+      padding: 28px 0 12px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.5rem, 3vw, 2.1rem);
+    }
+
+    h2 {
+      margin-top: 0;
+      font-size: 1.15rem;
+    }
+
+    .lede,
+    .muted {
+      color: var(--muted);
+    }
+
+    main {
+      padding-bottom: 40px;
+    }
+
+    .panel {
+      margin: 18px 0;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+    }
+
+    .sample-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    button,
+    select,
+    input,
+    textarea {
+      font: inherit;
+      color: inherit;
+    }
+
+    button {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 7px 13px;
+      background: rgba(127, 127, 127, 0.12);
+      cursor: pointer;
+    }
+
+    button:hover,
+    button[aria-pressed="true"] {
+      border-color: #4c9aff;
+      background: rgba(76, 154, 255, 0.18);
+    }
+
+    button.primary {
+      border-color: #0c66e4;
+      background: #0c66e4;
+      color: white;
+    }
+
+    label {
+      display: block;
+      font-weight: 650;
+      margin: 12px 0 6px;
+    }
+
+    textarea,
+    input[type="number"],
+    select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 10px;
+      background: rgba(127, 127, 127, 0.08);
+    }
+
+    textarea {
+      min-height: 112px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+
+    .controls-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+      align-items: end;
+    }
+
+    .controls-grid label {
+      margin-top: 0;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    .error {
+      margin: 12px 0 0;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: var(--bad-bg);
+      color: var(--bad-text);
+      white-space: pre-wrap;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.9fr) minmax(0, 1.4fr);
+      gap: 8px 18px;
+      margin: 0;
+    }
+
+    .metrics dt {
+      font-weight: 650;
+      color: var(--muted);
+    }
+
+    .metrics dd {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    output,
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    pre {
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 10px;
+      font-weight: 750;
+      width: fit-content;
+    }
+
+    .badge.pass {
+      background: var(--ok-bg);
+      color: var(--ok-text);
+    }
+
+    .badge.fail {
+      background: var(--bad-bg);
+      color: var(--bad-text);
+    }
+
+    .badge.pending {
+      background: var(--pending-bg);
+      color: var(--pending-text);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 820px;
+    }
+
+    th,
+    td {
+      padding: 10px 11px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    td[data-field="length"],
+    td[data-field="first"],
+    td[data-field="last"] {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: nowrap;
+    }
+
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 720px) {
+      .metrics {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
 </head>
 <body>
-  <p>To test this out, open up your developer console.</p>
-  <ul>
-    <li><a href="test/">Run unit tests in browser.</a></li>
-    <li><a href="docs/api/">Read generated docs.</a></li>
-  </ul>
+  <header>
+    <h1>AES 点播切片：别人的缓冲区也能解</h1>
+    <p class="lede">
+      填入包含无关前缀、后缀的完整缓冲区，再指定密文切片的起点和长度。
+      页面会同时核对一次解完、异步 <code>Decrypter</code> 回调，以及单独拷贝后的异步结果。
+      密钥和 IV 默认为四个大端 <code>Uint32Array</code> 零字。
+    </p>
+    <p><a href="test/">运行浏览器单元测试</a></p>
+  </header>
+
+  <main>
+    <section class="panel" aria-labelledby="playground-title">
+      <h2 id="playground-title">交互式切片</h2>
+
+      <div class="sample-buttons" aria-label="载入给定样例">
+        <button type="button" data-sample="short-48-16">短文本：48 / 起点 16</button>
+        <button type="button" data-sample="short-80-0">短文本：80 / 起点 0</button>
+        <button type="button" data-sample="short-56-7">短文本：56 / 起点 7</button>
+        <button type="button" data-sample="ts-376">TS 风格：376 / 424 / 7</button>
+        <button type="button" data-sample="long-128000">长切片：128000 / 128056 / 7</button>
+      </div>
+
+      <form id="decrypt-form">
+        <label for="buffer">缓冲区字节（支持连续 Hex、空格/逗号分隔 Hex、0x 字节或 JSON 十进制数组）</label>
+        <textarea id="buffer" name="buffer" spellcheck="false" autocomplete="off"></textarea>
+
+        <div class="controls-grid">
+          <div>
+            <label for="offset">起点（字节）</label>
+            <input id="offset" name="offset" type="number" min="0" step="1" value="16">
+          </div>
+          <div>
+            <label for="length">密文长度（字节）</label>
+            <input id="length" name="length" type="number" min="0" step="16" value="16">
+          </div>
+          <div>
+            <label for="buffer-format">字节格式</label>
+            <select id="buffer-format" name="bufferFormat">
+              <option value="auto" selected>自动</option>
+              <option value="hex">Hex</option>
+              <option value="decimal">十进制</option>
+            </select>
+          </div>
+          <div>
+            <label>缓冲区总长度</label>
+            <output id="buffer-total" class="mono">0</output>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="primary" id="run-button" type="submit">重新解密当前切片</button>
+          <span id="input-summary" class="muted mono" aria-live="polite"></span>
+        </div>
+        <p id="form-error" class="error" role="alert" hidden></p>
+        <p id="bundle-error" class="error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section class="panel" aria-labelledby="result-title">
+      <h2 id="result-title">当前片段结果</h2>
+      <dl class="metrics">
+        <dt>一次解完</dt>
+        <dd>
+          <span id="sync-state" class="badge pending">等待</span>
+          <span id="sync-length" data-testid="sync-result" data-result="sync-length" class="mono"></span>
+        </dd>
+
+        <dt>异步回调</dt>
+        <dd>
+          <span id="async-state" class="badge pending">等待</span>
+          <span id="callback-summary" data-testid="async-result" data-result="async-length" class="mono"></span>
+        </dd>
+
+        <dt>明文长度</dt>
+        <dd>
+          <output id="plaintext-length"
+                  data-testid="plaintext-length"
+                  data-result="length"
+                  class="mono">–</output>
+        </dd>
+
+        <dt>开头两个字节</dt>
+        <dd>
+          <output id="first-bytes"
+                  data-testid="first-bytes"
+                  data-result="first-bytes"
+                  class="mono">–</output>
+        </dd>
+
+        <dt>末尾字节</dt>
+        <dd>
+          <output id="last-byte"
+                  data-testid="last-byte"
+                  data-result="last-byte"
+                  class="mono">–</output>
+        </dd>
+
+        <dt>正文 / Hex 摘要</dt>
+        <dd><pre id="plaintext-text">–</pre></dd>
+
+        <dt>与单独拷贝再解的结果一致</dt>
+        <dd>
+          <output id="match"
+                  data-testid="match"
+                  data-result="match"
+                  class="badge pending">–</output>
+        </dd>
+      </dl>
+    </section>
+
+    <section class="panel" aria-labelledby="cases-title">
+      <h2 id="cases-title">给定样例核对表</h2>
+      <p class="muted">每一行都直接把共享缓冲区中的视图交给异步 <code>Decrypter</code>，并与 <code>slice()</code> 后的独占副本比较。</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>样例</th>
+              <th>缓冲区 / 起点 / 密文长度</th>
+              <th>明文长度</th>
+              <th>开头两个字节</th>
+              <th>末尾</th>
+              <th>与拷贝一致</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="cases-body">
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var api = window.aesDecrypter;
+      var $ = function (id) { return document.getElementById(id); };
+
+      var bufferInput = $('buffer');
+      var offsetInput = $('offset');
+      var lengthInput = $('length');
+      var formatSelect = $('buffer-format');
+      var bufferTotal = $('buffer-total');
+      var inputSummary = $('input-summary');
+      var formError = $('form-error');
+      var bundleError = $('bundle-error');
+      var syncState = $('sync-state');
+      var syncLength = $('sync-length');
+      var asyncState = $('async-state');
+      var callbackSummary = $('callback-summary');
+      var plaintextLength = $('plaintext-length');
+      var firstBytes = $('first-bytes');
+      var lastByte = $('last-byte');
+      var plaintextText = $('plaintext-text');
+      var matchOutput = $('match');
+      var casesBody = $('cases-body');
+
+      var KEY = new Uint32Array([0, 0, 0, 0]);
+      var IV = new Uint32Array([0, 0, 0, 0]);
+      var state = {
+        buffer: new Uint8Array(0),
+        runSerial: 0,
+        sampleLoadSerial: 0
+      };
+
+      var howdyCipher = new Uint8Array([
+        0xce, 0x90, 0x97, 0xd0,
+        0x08, 0x46, 0x4d, 0x18,
+        0x4f, 0xae, 0x01, 0x1c,
+        0x82, 0xa8, 0xf0, 0x67
+      ]);
+
+      function makeTsPlaintext() {
+        var bytes = new Uint8Array(376);
+
+        bytes[0] = 0x47;
+        for (var i = 1; i < bytes.length; i++) {
+          bytes[i] = (0x47 + i) & 0xff;
+        }
+        return bytes;
+      }
+
+      function makeLongPlaintext() {
+        var bytes = new Uint8Array(128000);
+
+        for (var i = 0; i < bytes.length; i++) {
+          bytes[i] = (i * 131 + 17) & 0xff;
+        }
+        bytes[0] = 0x47;
+        bytes[1] = 0x11;
+        bytes[bytes.length - 1] = 0x5a;
+        return bytes;
+      }
+
+      var samples = [
+        {
+          id: 'short-48-16',
+          name: 'howdy folks，前置 16 字节',
+          total: 48,
+          offset: 16,
+          plaintext: new TextEncoder().encode('howdy folks'),
+          cipher: howdyCipher
+        },
+        {
+          id: 'short-80-0',
+          name: 'howdy folks，起点 0 带尾巴',
+          total: 80,
+          offset: 0,
+          plaintext: new TextEncoder().encode('howdy folks'),
+          cipher: howdyCipher
+        },
+        {
+          id: 'short-56-7',
+          name: 'howdy folks，非对齐起点 7',
+          total: 56,
+          offset: 7,
+          plaintext: new TextEncoder().encode('howdy folks'),
+          cipher: howdyCipher
+        },
+        {
+          id: 'ts-376',
+          name: 'TS 风格递增字节',
+          total: 424,
+          offset: 7,
+          plaintext: makeTsPlaintext(),
+          cipher: null
+        },
+        {
+          id: 'long-128000',
+          name: '超过单次处理边界的长切片',
+          total: 128056,
+          offset: 7,
+          plaintext: makeLongPlaintext(),
+          cipher: null
+        }
+      ];
+
+      if (!api || !api.Decrypter || !api.decrypt) {
+        bundleError.hidden = false;
+        bundleError.textContent =
+          '没有找到 window.aesDecrypter。请先运行 npm run build，然后刷新本页。';
+        return;
+      }
+
+      function byteHex(value) {
+        return '0x' + value.toString(16).padStart(2, '0');
+      }
+
+      function compactHex(bytes, maxBytes) {
+        var limit = typeof maxBytes === 'number' ?
+          Math.min(bytes.length, maxBytes) :
+          bytes.length;
+        var output = '';
+
+        for (var i = 0; i < limit; i++) {
+          output += bytes[i].toString(16).padStart(2, '0');
+        }
+        if (limit < bytes.length) {
+          output += '…';
+        }
+        return output;
+      }
+
+      function bytesEqual(a, b) {
+        if (!a || !b || a.length !== b.length) {
+          return false;
+        }
+        for (var i = 0; i < a.length; i++) {
+          if (a[i] !== b[i]) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      function unpadView(bytes) {
+        var pad = bytes[bytes.length - 1];
+
+        if (pad < 1 || pad > 16 || pad > bytes.length) {
+          throw new Error('Invalid PKCS#7 padding');
+        }
+        for (var i = bytes.length - pad; i < bytes.length; i++) {
+          if (bytes[i] !== pad) {
+            throw new Error('Invalid PKCS#7 padding');
+          }
+        }
+        return bytes.subarray(0, bytes.length - pad);
+      }
+
+      function parseByteToken(token, format) {
+        var value;
+
+        if (/^0x[0-9a-f]+$/i.test(token)) {
+          value = parseInt(token, 16);
+        } else if (format === 'hex') {
+          if (!/^[0-9a-f]+$/i.test(token)) {
+            throw new Error('不是合法 Hex 字节：' + token);
+          }
+          value = parseInt(token, 16);
+        } else if (format === 'decimal') {
+          if (!/^\d+$/.test(token)) {
+            throw new Error('不是合法十进制字节：' + token);
+          }
+          value = Number(token);
+        } else if (/[a-f]/i.test(token)) {
+          value = parseInt(token, 16);
+        } else {
+          value = Number(token);
+        }
+
+        if (!Number.isInteger(value) || value < 0 || value > 255) {
+          throw new Error('字节必须在 0..255 之间：' + token);
+        }
+        return value;
+      }
+
+      function parseBufferInput() {
+        var text = bufferInput.value.trim();
+        var format = formatSelect.value;
+
+        if (!text) {
+          throw new Error('请填写缓冲区字节。');
+        }
+
+        if (text.charAt(0) === '[') {
+          var parsedArray = JSON.parse(text);
+
+          return Uint8Array.from(parsedArray, function(value) {
+            if (!Number.isInteger(value) || value < 0 || value > 255) {
+              throw new Error('JSON 数组中的字节必须在 0..255 之间。');
+            }
+            return value;
+          });
+        }
+
+        var delimiter = /[\s,;]+/;
+        var hasDelimiter = delimiter.test(text);
+
+        if (!hasDelimiter && format !== 'decimal') {
+          var hex = text.replace(/^0x/i, '');
+
+          if (!/^[0-9a-f]*$/i.test(hex) || hex.length % 2 !== 0) {
+            throw new Error('连续 Hex 必须由偶数个十六进制字符组成。');
+          }
+
+          var bytes = new Uint8Array(hex.length / 2);
+
+          for (var i = 0; i < hex.length; i += 2) {
+            bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+          }
+          return bytes;
+        }
+
+        var tokens = text.split(delimiter).filter(Boolean);
+
+        return Uint8Array.from(tokens, function(token) {
+          return parseByteToken(token, format);
+        });
+      }
+
+      function makeFilledBuffer(totalLength) {
+        var buffer = new Uint8Array(totalLength);
+
+        for (var i = 0; i < totalLength; i++) {
+          buffer[i] = (i * 37 + 11) & 0xff;
+        }
+        return buffer;
+      }
+
+      function makeSampleBuffer(sample, cipher) {
+        var buffer = makeFilledBuffer(sample.total);
+
+        buffer.set(cipher, sample.offset);
+        return buffer;
+      }
+
+      function wordsToBytes(words) {
+        var bytes = new Uint8Array(words.length * 4);
+        var view = new DataView(bytes.buffer);
+
+        for (var i = 0; i < words.length; i++) {
+          view.setUint32(i * 4, words[i], false);
+        }
+        return bytes;
+      }
+
+      function encryptWithBrowserCrypto(plaintext) {
+        if (!window.crypto || !window.crypto.subtle) {
+          return Promise.reject(new Error('当前浏览器不支持 crypto.subtle，无法生成大样例密文。'));
+        }
+
+        var keyBytes = wordsToBytes(KEY);
+        var ivBytes = wordsToBytes(IV);
+
+        return window.crypto.subtle
+          .importKey('raw', keyBytes, {name: 'AES-CBC'}, false, ['encrypt'])
+          .then(function(key) {
+            return window.crypto.subtle.encrypt(
+              {name: 'AES-CBC', iv: ivBytes},
+              key,
+              plaintext
+            );
+          })
+          .then(function(cipher) {
+            return new Uint8Array(cipher);
+          });
+      }
+
+      function getSampleCipher(sample) {
+        if (sample.cipher) {
+          return Promise.resolve(sample.cipher);
+        }
+        return encryptWithBrowserCrypto(sample.plaintext);
+      }
+
+      function decryptAsync(view) {
+        return new Promise(function(resolve, reject) {
+          try {
+            // eslint-disable-next-line no-new
+            new api.Decrypter(view, KEY, IV, function(error, result) {
+              if (error) {
+                reject(error);
+              } else {
+                resolve(result);
+              }
+            });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      }
+
+      function setBadge(element, state, text) {
+        element.className = 'badge ' + state;
+        element.dataset.state = state;
+        element.textContent = text;
+      }
+
+      function showFormError(error) {
+        formError.hidden = false;
+        formError.textContent = error && error.message ? error.message : String(error);
+      }
+
+      function clearFormError() {
+        formError.hidden = true;
+        formError.textContent = '';
+      }
+
+      function updateBufferMeta() {
+        bufferTotal.textContent = String(state.buffer.length);
+      }
+
+      function loadBuffer(bytes, offset, length) {
+        state.buffer = bytes;
+        bufferInput.value = compactHex(bytes);
+        formatSelect.value = 'auto';
+        offsetInput.value = String(offset);
+        lengthInput.value = String(length);
+        updateBufferMeta();
+      }
+
+      function loadSample(id) {
+        var sample = samples.find(function(item) { return item.id === id; });
+        var loadSerial = ++state.sampleLoadSerial;
+
+        if (!sample) {
+          return;
+        }
+
+        getSampleCipher(sample).then(function(cipher) {
+          // A newer sample/edit has superseded this asynchronous generation.
+          if (loadSerial !== state.sampleLoadSerial) {
+            return;
+          }
+
+          sample.cipher = cipher;
+          state.buffer = makeSampleBuffer(sample, cipher);
+          loadBuffer(state.buffer, sample.offset, cipher.length);
+          runPlayground();
+        }).catch(function(error) {
+          if (loadSerial === state.sampleLoadSerial) {
+            showFormError(error);
+          }
+        });
+      }
+
+      function getSlice() {
+        var offset = Number(offsetInput.value);
+        var length = Number(lengthInput.value);
+
+        if (!Number.isInteger(offset) || offset < 0) {
+          throw new Error('起点必须是不小于 0 的整数。');
+        }
+        if (!Number.isInteger(length) || length < 0) {
+          throw new Error('长度必须是不小于 0 的整数。');
+        }
+        if (offset > state.buffer.length) {
+          throw new Error('起点超过了缓冲区总长度。');
+        }
+        if (offset + length > state.buffer.length) {
+          throw new Error(
+            '切片越界：起点 ' + offset + ' + 长度 ' + length +
+            ' 大于缓冲区长度 ' + state.buffer.length + '。'
+          );
+        }
+
+        inputSummary.textContent =
+          'buffer[' + offset + '..' + (offset + length) + ']，共 ' + length + ' 个密文字节';
+
+        return state.buffer.subarray(offset, offset + length);
+      }
+
+      function resetPlaintextOutputs(message) {
+        plaintextLength.textContent = '–';
+        plaintextLength.dataset.length = '';
+        firstBytes.textContent = '–';
+        firstBytes.dataset.bytes = '';
+        lastByte.textContent = '–';
+        lastByte.dataset.byte = '';
+        plaintextText.textContent = message || '–';
+      }
+
+      function renderPending() {
+        setBadge(syncState, 'pending', '解密中…');
+        syncLength.textContent = '';
+        setBadge(asyncState, 'pending', '等待回调…');
+        callbackSummary.textContent = '';
+        plaintextLength.textContent = '…';
+        firstBytes.textContent = '…';
+        lastByte.textContent = '…';
+        plaintextText.textContent = '解密中…';
+        setBadge(matchOutput, 'pending', '比较中…');
+      }
+
+      function renderSync(slice) {
+        try {
+          var padded = api.decrypt(slice, KEY, IV);
+          var unpaddedLength;
+
+          try {
+            unpaddedLength = unpadView(padded).length;
+          } catch (paddingError) {
+            unpaddedLength = '无效填充';
+          }
+
+          setBadge(syncState, 'pass', '成功');
+          syncLength.textContent =
+            '返回 ' + padded.length + ' 字节（仍带填充）；去填充后 ' + unpaddedLength;
+        } catch (error) {
+          setBadge(syncState, 'fail', 'RangeError / 错误');
+          syncLength.textContent = error.message;
+        }
+      }
+
+      function isPrintableText(bytes) {
+        if (!bytes.length) {
+          return false;
+        }
+        for (var i = 0; i < bytes.length; i++) {
+          var value = bytes[i];
+
+          if (value !== 10 && value !== 13 && value !== 9 &&
+              (value < 32 || value > 126)) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      function renderPlaintext(bytes) {
+        plaintextLength.textContent = String(bytes.length);
+        plaintextLength.dataset.length = String(bytes.length);
+
+        var firstTwo = Array.prototype.slice.call(bytes.subarray(0, 2));
+
+        firstBytes.textContent = firstTwo.length ?
+          firstTwo.map(byteHex).join(' ') :
+          '（空）';
+        firstBytes.dataset.bytes = firstTwo.map(byteHex).join(' ');
+
+        lastByte.textContent = bytes.length ? byteHex(bytes[bytes.length - 1]) : '–';
+        lastByte.dataset.byte = bytes.length ? byteHex(bytes[bytes.length - 1]) : '';
+
+        if (isPrintableText(bytes)) {
+          plaintextText.textContent = new TextDecoder().decode(bytes);
+        } else {
+          plaintextText.textContent =
+            '二进制内容；前 64 字节：' + compactHex(bytes, 64) +
+            (bytes.length > 64 ? '\n末尾字节：' + byteHex(bytes[bytes.length - 1]) : '');
+        }
+      }
+
+      function runPlayground() {
+        var serial = ++state.runSerial;
+
+        clearFormError();
+
+        var slice;
+
+        try {
+          if (!state.buffer.length) {
+            state.buffer = parseBufferInput();
+            updateBufferMeta();
+          }
+          slice = getSlice();
+        } catch (error) {
+          resetPlaintextOutputs('当前起点或长度不能形成可解密切片。');
+          showFormError(error);
+          setBadge(syncState, 'fail', '未运行');
+          syncLength.textContent = '';
+          setBadge(asyncState, 'fail', '未运行');
+          callbackSummary.textContent = '';
+          setBadge(matchOutput, 'fail', '无法比较');
+          return;
+        }
+
+        renderPending();
+        renderSync(slice);
+
+        var sharedRequest = decryptAsync(slice);
+        var copiedRequest = decryptAsync(slice.slice());
+
+        sharedRequest.then(function(result) {
+          if (serial !== state.runSerial) {
+            return;
+          }
+          setBadge(asyncState, 'pass', '回调成功');
+          callbackSummary.textContent = '回调明文 ' + result.length + ' 字节';
+        }).catch(function(error) {
+          if (serial !== state.runSerial) {
+            return;
+          }
+          setBadge(asyncState, 'fail', '回调错误');
+          callbackSummary.textContent = error && error.message ? error.message : String(error);
+        });
+
+        Promise.all([sharedRequest, copiedRequest]).then(function(results) {
+          if (serial !== state.runSerial) {
+            return;
+          }
+
+          var shared = results[0];
+          var copied = results[1];
+          var same = bytesEqual(shared, copied);
+
+          state.result = {
+            serial: serial,
+            plaintext: shared,
+            copied: copied,
+            matchesCopy: same
+          };
+          renderPlaintext(shared);
+          if (same) {
+            setBadge(matchOutput, 'pass', '一致（true）');
+          } else {
+            setBadge(matchOutput, 'fail', '不一致（false）');
+          }
+          matchOutput.dataset.match = String(same);
+        }).catch(function(error) {
+          if (serial !== state.runSerial) {
+            return;
+          }
+
+          plaintextLength.textContent = '错误';
+          firstBytes.textContent = '–';
+          lastByte.textContent = '–';
+          plaintextText.textContent = error && error.stack ? error.stack : String(error);
+          setBadge(matchOutput, 'fail', '不一致 / 无法比较');
+          matchOutput.dataset.match = 'false';
+          showFormError(error);
+        });
+      }
+
+      function buildCaseRows() {
+        samples.forEach(function(sample) {
+          var row = document.createElement('tr');
+
+          row.dataset.case = sample.id;
+          row.innerHTML =
+            '<th scope="row">' + sample.name + '</th>' +
+            '<td class="mono" data-field="geometry">' +
+              sample.total + ' / ' + sample.offset + ' / …' +
+            '</td>' +
+            '<td data-field="length">…</td>' +
+            '<td data-field="first">…</td>' +
+            '<td data-field="last">…</td>' +
+            '<td data-field="match"><span class="badge pending">等待</span></td>' +
+            '<td data-field="status" aria-live="polite">排队中</td>';
+          casesBody.appendChild(row);
+        });
+      }
+
+      function setCaseText(id, field, text) {
+        var cell = casesBody.querySelector(
+          'tr[data-case="' + id + '"] [data-field="' + field + '"]'
+        );
+
+        if (cell) {
+          cell.textContent = text;
+        }
+      }
+
+      function runSampleCase(sample) {
+        var row = casesBody.querySelector('tr[data-case="' + sample.id + '"]');
+
+        setCaseText(sample.id, 'status', '生成密文中…');
+
+        return getSampleCipher(sample).then(function(cipher) {
+          var buffer = makeSampleBuffer(sample, cipher);
+          var slice = buffer.subarray(sample.offset, sample.offset + cipher.length);
+
+          setCaseText(
+            sample.id,
+            'geometry',
+            sample.total + ' / ' + sample.offset + ' / ' + cipher.length
+          );
+          setCaseText(sample.id, 'status', '异步解密中…');
+
+          return Promise.all([
+            decryptAsync(slice),
+            decryptAsync(slice.slice())
+          ]).then(function(results) {
+            var shared = results[0];
+            var copied = results[1];
+            var sameCopy = bytesEqual(shared, copied);
+            var sameExpected = bytesEqual(shared, sample.plaintext);
+            var firstTwo = Array.prototype.slice.call(shared.subarray(0, 2));
+            var matchCell = row.querySelector('[data-field="match"]');
+            var matchBadge = document.createElement('span');
+
+            setCaseText(sample.id, 'length', String(shared.length));
+            setCaseText(
+              sample.id,
+              'first',
+              firstTwo.map(byteHex).join(' ')
+            );
+            setCaseText(
+              sample.id,
+              'last',
+              shared.length ? byteHex(shared[shared.length - 1]) : '–'
+            );
+
+            matchBadge.className = 'badge ' + (sameCopy && sameExpected ? 'pass' : 'fail');
+            matchBadge.dataset.match = String(sameCopy);
+            matchBadge.textContent = sameCopy ?
+              ('一致' + (sameExpected ? '（true）' : '，但与预期不同')) :
+              '不一致（false）';
+            matchCell.textContent = '';
+            matchCell.appendChild(matchBadge);
+
+            setCaseText(
+              sample.id,
+              'status',
+              sameCopy && sameExpected ? '通过' : '需要检查'
+            );
+            row.dataset.match = String(sameCopy);
+            row.dataset.expected = String(sameExpected);
+          });
+        }).catch(function(error) {
+          var matchCell = row.querySelector('[data-field="match"]');
+
+          matchCell.innerHTML = '<span class="badge fail">错误</span>';
+          setCaseText(
+            sample.id,
+            'status',
+            error && error.message ? error.message : String(error)
+          );
+          row.dataset.match = 'false';
+        });
+      }
+
+      bufferInput.addEventListener('input', function() {
+        state.sampleLoadSerial++;
+        try {
+          state.buffer = parseBufferInput();
+          updateBufferMeta();
+          runPlayground();
+        } catch (error) {
+          state.buffer = new Uint8Array(0);
+          updateBufferMeta();
+          resetPlaintextOutputs('缓冲区内容无法解析。');
+          setBadge(syncState, 'fail', '未运行');
+          setBadge(asyncState, 'fail', '未运行');
+          setBadge(matchOutput, 'fail', '无法比较');
+          showFormError(error);
+        }
+      });
+
+      formatSelect.addEventListener('change', function() {
+        state.sampleLoadSerial++;
+        try {
+          state.buffer = parseBufferInput();
+          updateBufferMeta();
+          runPlayground();
+        } catch (error) {
+          resetPlaintextOutputs('缓冲区内容无法按所选格式解析。');
+          showFormError(error);
+        }
+      });
+
+      offsetInput.addEventListener('input', runPlayground);
+      offsetInput.addEventListener('change', runPlayground);
+      lengthInput.addEventListener('input', runPlayground);
+      lengthInput.addEventListener('change', runPlayground);
+      $('decrypt-form').addEventListener('submit', function(event) {
+        event.preventDefault();
+        try {
+          state.buffer = parseBufferInput();
+          updateBufferMeta();
+        } catch (error) {
+          resetPlaintextOutputs('缓冲区内容无法解析。');
+          showFormError(error);
+          return;
+        }
+        runPlayground();
+      });
+
+      Array.prototype.forEach.call(
+        document.querySelectorAll('[data-sample]'),
+        function(button) {
+          button.addEventListener('click', function() {
+            loadSample(button.dataset.sample);
+          });
+        }
+      );
+
+      buildCaseRows();
+
+      window.demoApp = {
+        samples: samples,
+        loadSample: loadSample,
+        setSlice: function(bytes, offset, length) {
+          state.buffer = bytes;
+          loadBuffer(bytes, offset, length);
+          return runPlayground();
+        },
+        run: runPlayground,
+        getResult: function() { return state.result || null; },
+        parseBufferInput: parseBufferInput,
+        decryptAsync: decryptAsync
+      };
+
+      loadSample('short-48-16');
+      samples.forEach(runSampleCase);
+    }());
+  </script>
 </body>
 </html>
